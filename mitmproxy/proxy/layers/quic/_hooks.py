@@ -36,6 +36,8 @@ class QuicTlsSettings:
     """An optional path to a directory that contains the necessary information to verify the peer certificate."""
     ca_file: str | None = None
     """An optional path to a PEM file that will be used to verify the peer certificate."""
+    use_system_trust_store: bool = False
+    """Whether to additionally trust the operating system's certificate store when verifying the peer certificate."""
     verify_mode: VerifyMode | None = None
     """An optional flag that specifies how/if the peer's certificate should be validated."""
 

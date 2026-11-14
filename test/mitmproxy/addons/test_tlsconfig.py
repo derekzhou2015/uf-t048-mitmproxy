@@ -478,6 +478,77 @@ class TestTlsConfig:
             )
             assert self.quic_do_handshake(tssl_client, tssl_server)
 
+    @pytest.mark.parametrize("use_quic", [False, True])
+    def test_server_trust_store(self, tdata, monkeypatch, use_quic):
+        """
+        With ssl_verify_upstream_trust_store enabled, upstream certificates issued by
+        CAs from the OS trust store are accepted, consistently for TLS and QUIC.
+        """
+        ta = tlsconfig.TlsConfig()
+        with taddons.context(ta) as tctx:
+            tctx.configure(ta, ssl_verify_upstream_trust_store=True)
+            ctx = _ctx(tctx.options)
+            ctx.server.address = ("example.mitmproxy.org", 443)
+
+            with open(
+                tdata.path("mitmproxy/net/data/verificationcerts/trusted-root.crt"),
+                "rb",
+            ) as f:
+                system_root = x509.load_pem_x509_certificate(f.read())
+            monkeypatch.setattr(
+                net_tls, "get_system_trust_store_certificates", lambda: (system_root,)
+            )
+            net_tls.create_proxy_server_context.cache_clear()
+            try:
+                if use_quic:
+                    tls_start = quic.QuicTlsData(ctx.server, context=ctx)
+                    ta.quic_start_server(tls_start)
+                    assert tls_start.settings.use_system_trust_store
+                    tls_start.settings.alpn_protocols = ["h3"]
+                    tssl_client = test_quic.SSLTest(settings=tls_start.settings)
+                    tssl_server = test_quic.SSLTest(server_side=True, alpn=["h3"])
+                    assert self.quic_do_handshake(tssl_client, tssl_server)
+                else:
+                    tls_start = tls.TlsData(ctx.server, context=ctx)
+                    ta.tls_start_server(tls_start)
+                    tssl_client = tls_start.ssl_conn
+                    tssl_server = test_tls.SSLTest(server_side=True)
+                    assert self.do_handshake(tssl_client, tssl_server)
+            finally:
+                net_tls.create_proxy_server_context.cache_clear()
+
+    def test_server_trust_store_disabled_by_default(self, tdata, monkeypatch):
+        """The OS trust store is not consulted unless ssl_verify_upstream_trust_store is enabled."""
+        ta = tlsconfig.TlsConfig()
+        with taddons.context(ta) as tctx:
+            ctx = _ctx(tctx.options)
+            ctx.server.address = ("example.mitmproxy.org", 443)
+
+            with open(
+                tdata.path("mitmproxy/net/data/verificationcerts/trusted-root.crt"),
+                "rb",
+            ) as f:
+                system_root = x509.load_pem_x509_certificate(f.read())
+            monkeypatch.setattr(
+                net_tls, "get_system_trust_store_certificates", lambda: (system_root,)
+            )
+            net_tls.create_proxy_server_context.cache_clear()
+            try:
+                assert not tctx.options.ssl_verify_upstream_trust_store
+
+                tls_start = tls.TlsData(ctx.server, context=ctx)
+                ta.tls_start_server(tls_start)
+                tssl_client = tls_start.ssl_conn
+                tssl_server = test_tls.SSLTest(server_side=True)
+                with pytest.raises(SSL.Error, match="certificate verify failed"):
+                    self.do_handshake(tssl_client, tssl_server)
+
+                quic_tls_start = quic.QuicTlsData(ctx.server, context=ctx)
+                ta.quic_start_server(quic_tls_start)
+                assert not quic_tls_start.settings.use_system_trust_store
+            finally:
+                net_tls.create_proxy_server_context.cache_clear()
+
     def test_tls_start_server_insecure(self):
         ta = tlsconfig.TlsConfig()
         with taddons.context(ta) as tctx:

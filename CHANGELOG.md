@@ -7,6 +7,11 @@
 
 ## Unreleased: mitmproxy next
 
+- Add a new `ssl_verify_upstream_trust_store` option to additionally trust the
+  operating system's certificate store (e.g. the Windows certificate store) when
+  verifying upstream server certificates. This allows upstream servers presenting
+  certificates from enterprise or private CAs to pass verification, and applies
+  consistently to both TLS and QUIC upstream connections.
 - Fix a crash when an addon or `modify_headers` sets an HTTP/3 header name or value longer than
   65,535 bytes, which QPACK cannot encode. The client now receives a 502 error instead, or a stream
   reset if the response was already partly sent.

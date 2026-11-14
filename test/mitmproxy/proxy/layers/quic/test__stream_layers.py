@@ -4,18 +4,23 @@ from logging import DEBUG
 from logging import ERROR
 from logging import INFO
 from logging import WARNING
+from pathlib import Path
 from typing import Literal
 from typing import TypeVar
 from unittest.mock import MagicMock
 
+import certifi
 import pytest
 from aioquic.buffer import Buffer as QuicBuffer
 from aioquic.quic import events as quic_events
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.connection import pull_quic_header
 from aioquic.quic.connection import QuicConnection
+from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding
 
 from mitmproxy import connection
+from mitmproxy.net import tls as net_tls
 from mitmproxy.proxy import commands
 from mitmproxy.proxy import context
 from mitmproxy.proxy import events
@@ -235,6 +240,41 @@ def test_tls_settings_to_configuration():
     # our server connections can only send datagrams to the address they connected to
     config = tls_settings_to_configuration(QuicTlsSettings(), is_client=True)
     assert not config.migrate_to_preferred_address
+
+
+def test_tls_settings_to_configuration_system_trust_store(monkeypatch, tdata):
+    """
+    The QUIC layer must trust the same OS trust store certificates as the TLS layer,
+    keeping the certifi bundle (or the explicitly configured CA) in place.
+    """
+    root = x509.load_pem_x509_certificate(
+        Path(
+            tdata.path("mitmproxy/net/data/verificationcerts/trusted-root.crt")
+        ).read_bytes()
+    )
+    monkeypatch.setattr(net_tls, "get_system_trust_store_certificates", lambda: (root,))
+
+    config = tls_settings_to_configuration(
+        QuicTlsSettings(use_system_trust_store=True), is_client=True
+    )
+    assert config.cadata == root.public_bytes(Encoding.PEM)
+    # the certifi bundle is kept, mirroring the TLS layer
+    assert config.cafile == certifi.where()
+
+    # an explicitly configured CA takes precedence over the certifi fallback
+    config = tls_settings_to_configuration(
+        QuicTlsSettings(use_system_trust_store=True, ca_file="/path/to/ca.pem"),
+        is_client=True,
+    )
+    assert config.cadata == root.public_bytes(Encoding.PEM)
+    assert config.cafile == "/path/to/ca.pem"
+
+    # disabled: no system certificates, no implicit certifi fallback from our side
+    config = tls_settings_to_configuration(
+        QuicTlsSettings(use_system_trust_store=False), is_client=True
+    )
+    assert config.cadata is None
+    assert config.cafile is None
 
 
 class MockQuic(QuicConnection):

@@ -228,6 +228,17 @@ class TlsConfig:
             False,
             "Like --emudhra, but prioritize the Sectigo AAA Certificate Services cross-sign for older OpenSSL trust stores.",
         )
+        loader.add_option(
+            name="ssl_verify_upstream_trust_store",
+            typespec=bool,
+            default=False,
+            help="Also trust the operating system's certificate store (e.g. the Windows "
+            "certificate store) when verifying upstream server certificates. This is "
+            "useful for upstream servers that present certificates issued by enterprise "
+            "or private CAs. The system trust store is used in addition to "
+            "ssl_verify_upstream_trusted_ca and the certifi CA bundle, and applies "
+            "to both TLS and QUIC upstream connections.",
+        )
 
     def tls_clienthello(self, tls_clienthello: tls.ClientHelloData):
         conn_context = tls_clienthello.context
@@ -369,6 +380,7 @@ class TlsConfig:
             ca_pemfile=ctx.options.ssl_verify_upstream_trusted_ca,
             client_cert=client_cert,
             legacy_server_connect=ctx.options.ssl_insecure,
+            use_system_trust_store=ctx.options.ssl_verify_upstream_trust_store,
         )
 
         tls_start.ssl_conn = SSL.Connection(ssl_ctx)
@@ -491,6 +503,9 @@ class TlsConfig:
         # NOTE client certificates are not supported
         tls_start.settings.ca_path = ctx.options.ssl_verify_upstream_trusted_confdir
         tls_start.settings.ca_file = ctx.options.ssl_verify_upstream_trusted_ca
+        tls_start.settings.use_system_trust_store = (
+            ctx.options.ssl_verify_upstream_trust_store
+        )
 
     def running(self):
         # FIXME: We have a weird bug where the contract for configure is not followed and it is never called with

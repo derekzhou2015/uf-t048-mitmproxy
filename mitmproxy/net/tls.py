@@ -1,6 +1,9 @@
+import logging
 import os
+import ssl
 import threading
 import typing
+import warnings
 from collections.abc import Callable
 from collections.abc import Iterable
 from enum import Enum
@@ -12,13 +15,17 @@ from typing import BinaryIO
 
 import certifi
 import OpenSSL
+from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurve
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurveOID
 from cryptography.hazmat.primitives.asymmetric.ec import get_curve_for_oid
+from cryptography.utils import CryptographyDeprecationWarning
 from cryptography.x509 import ObjectIdentifier
 from OpenSSL import SSL
 
 from mitmproxy import certs
+
+logger = logging.getLogger(__name__)
 
 # Remove once pyOpenSSL 23.3.0 is released and bump version in pyproject.toml.
 try:  # pragma: no cover
@@ -191,6 +198,41 @@ def _create_ssl_context(
     return context
 
 
+@cache
+def get_system_trust_store_certificates() -> tuple[x509.Certificate, ...]:
+    """
+    Load the CA certificates from the operating system's trust store
+    (on Windows, the system certificate store; elsewhere, OpenSSL's default paths).
+
+    This is used to optionally extend upstream certificate verification to CAs that
+    are trusted by the OS but are not part of the certifi bundle, such as enterprise
+    or private CAs.
+    """
+    try:
+        default_context = ssl.create_default_context()
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"Cannot load the system trust store: {e}")
+        return ()
+
+    certificates = []
+    seen = set()
+    with warnings.catch_warnings():
+        # Some OS trust stores contain certificates with non-positive serial
+        # numbers, which cryptography parses with a deprecation warning.
+        warnings.simplefilter("ignore", CryptographyDeprecationWarning)
+        for der_cert in default_context.get_ca_certs(binary_form=True):
+            if der_cert in seen:
+                continue
+            seen.add(der_cert)
+            try:
+                certificates.append(x509.load_der_x509_certificate(der_cert))
+            except ValueError:  # pragma: no cover
+                logger.warning(
+                    "Ignoring an unparsable certificate from the system trust store."
+                )
+    return tuple(certificates)
+
+
 @lru_cache(256)
 def create_proxy_server_context(
     *,
@@ -204,6 +246,7 @@ def create_proxy_server_context(
     ca_pemfile: str | None,
     client_cert: str | None,
     legacy_server_connect: bool,
+    use_system_trust_store: bool,
 ) -> SSL.Context:
     context: SSL.Context = _create_ssl_context(
         method=method,
@@ -222,6 +265,13 @@ def create_proxy_server_context(
         raise RuntimeError(
             f"Cannot load trusted certificates ({ca_pemfile=}, {ca_path=})."
         ) from e
+
+    if use_system_trust_store:
+        cert_store = context.get_cert_store()
+        for system_cert in get_system_trust_store_certificates():
+            # pyOpenSSL silently ignores certificates that are already present,
+            # e.g. roots that are also shipped in the certifi bundle.
+            cert_store.add_cert(OpenSSL.crypto.X509.from_cryptography(system_cert))
 
     # Client Certs
     if client_cert:

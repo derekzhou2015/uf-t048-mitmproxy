@@ -13,6 +13,7 @@ from logging import ERROR
 from logging import INFO
 from logging import WARNING
 
+import certifi
 from aioquic.buffer import Buffer as QuicBuffer
 from aioquic.h3.connection import ErrorCode as H3ErrorCode
 from aioquic.quic import events as quic_events
@@ -22,6 +23,7 @@ from aioquic.quic.connection import QuicErrorCode
 from aioquic.quic.packet import encode_quic_version_negotiation
 from aioquic.quic.packet import PACKET_TYPE_INITIAL
 from aioquic.quic.packet import pull_quic_header
+from cryptography.hazmat.primitives.serialization import Encoding
 
 from ._client_hello_parser import quic_parse_client_hello_from_datagrams
 from ._commands import CloseQuicConnection
@@ -629,6 +631,19 @@ def tls_settings_to_configuration(
 ) -> QuicConfiguration:
     """Converts `QuicTlsSettings` to `QuicConfiguration`."""
 
+    cadata: bytes | None = None
+    cafile = settings.ca_file
+    if settings.use_system_trust_store:
+        # Mirror the TLS layer (mitmproxy.net.tls.create_proxy_server_context):
+        # trust the OS certificate store in addition to the configured CA,
+        # or in addition to the certifi bundle if no CA is configured.
+        cadata = b"".join(
+            cert.public_bytes(Encoding.PEM)
+            for cert in tls.get_system_trust_store_certificates()
+        )
+        if cafile is None and settings.ca_path is None:
+            cafile = certifi.where()
+
     return QuicConfiguration(
         alpn_protocols=settings.alpn_protocols,
         is_client=is_client,
@@ -638,8 +653,9 @@ def tls_settings_to_configuration(
             else None
         ),
         server_name=server_name,
-        cafile=settings.ca_file,
+        cafile=cafile,
         capath=settings.ca_path,
+        cadata=cadata,
         certificate=settings.certificate,
         certificate_chain=settings.certificate_chain,
         cipher_suites=settings.cipher_suites,

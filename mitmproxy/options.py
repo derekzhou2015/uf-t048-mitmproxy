@@ -195,6 +195,19 @@ class Options(optmanager.OptManager):
             "Path to a PEM formatted trusted CA certificate.",
         )
         self.add_option(
+            "ssl_verify_upstream_trusted_system_store",
+            bool,
+            False,
+            """
+            Additionally trust certificate authorities from the operating
+            system's certificate store (e.g. the Windows certificate store)
+            when verifying upstream server certificates. This applies to both
+            (D)TLS and QUIC/HTTP3 connections. If this option is disabled,
+            only the bundled certifi trust store and any explicitly configured
+            CA certificates are used.
+            """,
+        )
+        self.add_option(
             "tcp_hosts",
             Sequence[str],
             [],

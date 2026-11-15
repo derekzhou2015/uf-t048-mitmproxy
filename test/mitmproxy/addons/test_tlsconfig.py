@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding
 from OpenSSL import SSL
 
 from mitmproxy import certs
@@ -477,6 +478,91 @@ class TestTlsConfig:
                 server_side=True, sni=hostname.encode(), alpn=["h3"]
             )
             assert self.quic_do_handshake(tssl_client, tssl_server)
+
+    def test_tls_start_server_system_store(self, tdata, monkeypatch):
+        """The OS trust store is used for upstream (D)TLS verification when enabled."""
+        root_pem = Path(
+            tdata.path("mitmproxy/net/data/verificationcerts/trusted-root.crt")
+        ).read_bytes()
+        root_der = x509.load_pem_x509_certificate(root_pem).public_bytes(Encoding.DER)
+        monkeypatch.setattr(
+            net_tls, "_system_trusted_ca_certs_der", lambda: (root_der,)
+        )
+
+        ta = tlsconfig.TlsConfig()
+        with taddons.context(ta) as tctx:
+            ctx = _ctx(tctx.options)
+            ctx.server.address = ("example.mitmproxy.org", 443)
+            tctx.configure(ta, ssl_verify_upstream_trusted_system_store=True)
+
+            tls_start = tls.TlsData(ctx.server, context=ctx)
+            ta.tls_start_server(tls_start)
+            tssl_client = tls_start.ssl_conn
+            tssl_server = test_tls.SSLTest(server_side=True)
+            assert self.do_handshake(tssl_client, tssl_server)
+
+    def test_quic_start_server_system_store(self, tdata, monkeypatch):
+        """The OS trust store is used for upstream QUIC verification when enabled."""
+        root_pem = Path(
+            tdata.path("mitmproxy/net/data/verificationcerts/trusted-root.crt")
+        ).read_bytes()
+        monkeypatch.setattr(net_tls, "system_trusted_ca_pem", lambda: root_pem)
+
+        ta = tlsconfig.TlsConfig()
+        with taddons.context(ta) as tctx:
+            ctx = _ctx(tctx.options)
+            ctx.server.address = ("example.mitmproxy.org", 443)
+            tctx.configure(ta, ssl_verify_upstream_trusted_system_store=True)
+
+            tls_start = quic.QuicTlsData(ctx.server, context=ctx)
+            ta.quic_start_server(tls_start)
+            settings = tls_start.settings
+            # the system store is used in addition to the default certifi
+            # bundle, consistent with the (D)TLS implementation.
+            assert settings.cadata is not None
+            assert root_pem in settings.cadata
+            assert settings.cadata.count(b"-----BEGIN CERTIFICATE-----") > 1
+
+            settings.alpn_protocols = ["h3"]
+            tssl_client = test_quic.SSLTest(settings=settings)
+            tssl_server = test_quic.SSLTest(server_side=True, alpn=["h3"])
+            assert self.quic_do_handshake(tssl_client, tssl_server)
+
+    def test_quic_start_server_system_store_with_custom_ca(self, tdata, monkeypatch):
+        """A custom CA replaces the certifi defaults, but not the system store."""
+        root_pem = Path(
+            tdata.path("mitmproxy/net/data/verificationcerts/trusted-root.crt")
+        ).read_bytes()
+        monkeypatch.setattr(net_tls, "system_trusted_ca_pem", lambda: root_pem)
+
+        ta = tlsconfig.TlsConfig()
+        with taddons.context(ta) as tctx:
+            ctx = _ctx(tctx.options)
+            ctx.server.address = ("example.mitmproxy.org", 443)
+            tctx.configure(
+                ta,
+                ssl_verify_upstream_trusted_system_store=True,
+                ssl_verify_upstream_trusted_ca=tdata.path(
+                    "mitmproxy/net/data/verificationcerts/trusted-root.crt"
+                ),
+            )
+
+            tls_start = quic.QuicTlsData(ctx.server, context=ctx)
+            ta.quic_start_server(tls_start)
+            # certifi must not be loaded when a custom CA is configured,
+            # consistent with the (D)TLS implementation.
+            assert tls_start.settings.cadata == root_pem
+
+    def test_quic_start_server_system_store_disabled_by_default(self):
+        """The OS trust store is not used unless explicitly enabled."""
+        ta = tlsconfig.TlsConfig()
+        with taddons.context(ta) as tctx:
+            ctx = _ctx(tctx.options)
+            ctx.server.address = ("example.mitmproxy.org", 443)
+
+            tls_start = quic.QuicTlsData(ctx.server, context=ctx)
+            ta.quic_start_server(tls_start)
+            assert tls_start.settings.cadata is None
 
     def test_tls_start_server_insecure(self):
         ta = tlsconfig.TlsConfig()

@@ -8,6 +8,7 @@ from typing import Any
 from typing import Literal
 from typing import TypedDict
 
+import certifi
 from aioquic.h3.connection import H3_ALPN
 from aioquic.tls import CipherSuite
 from cryptography import x509
@@ -369,6 +370,7 @@ class TlsConfig:
             ca_pemfile=ctx.options.ssl_verify_upstream_trusted_ca,
             client_cert=client_cert,
             legacy_server_connect=ctx.options.ssl_insecure,
+            use_system_store=ctx.options.ssl_verify_upstream_trusted_system_store,
         )
 
         tls_start.ssl_conn = SSL.Connection(ssl_ctx)
@@ -491,6 +493,18 @@ class TlsConfig:
         # NOTE client certificates are not supported
         tls_start.settings.ca_path = ctx.options.ssl_verify_upstream_trusted_confdir
         tls_start.settings.ca_file = ctx.options.ssl_verify_upstream_trusted_ca
+        if ctx.options.ssl_verify_upstream_trusted_system_store:
+            # aioquic does not load the default certifi trust store when cadata
+            # is set, so we need to prepend it explicitly when no custom CA is
+            # configured to stay consistent with tls_start_server above.
+            tls_start.settings.cadata = net_tls.system_trusted_ca_pem()
+            if (
+                tls_start.settings.ca_file is None
+                and tls_start.settings.ca_path is None
+            ):
+                tls_start.settings.cadata = (
+                    Path(certifi.where()).read_bytes() + tls_start.settings.cadata
+                )
 
     def running(self):
         # FIXME: We have a weird bug where the contract for configure is not followed and it is never called with

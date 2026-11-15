@@ -1,4 +1,5 @@
 import os
+import ssl
 import threading
 import typing
 from collections.abc import Callable
@@ -149,6 +150,31 @@ log_master_secret = make_master_secret_logger(
 )
 
 
+@cache
+def _system_trusted_ca_certs_der() -> tuple[bytes, ...]:
+    """
+    Get the trusted certificate authorities from the operating system's
+    certificate store (e.g. the Windows certificate store), DER-encoded.
+    """
+    context = ssl.create_default_context()
+    return tuple(context.get_ca_certs(binary_form=True))
+
+
+@cache
+def system_trusted_ca_pem() -> bytes:
+    """
+    Get the trusted certificate authorities from the operating system's
+    certificate store as a deduplicated PEM bundle.
+    """
+    seen: set[bytes] = set()
+    pems: list[str] = []
+    for der_cert in _system_trusted_ca_certs_der():
+        if der_cert not in seen:
+            seen.add(der_cert)
+            pems.append(ssl.DER_cert_to_PEM_cert(der_cert))
+    return "".join(pems).encode("ascii")
+
+
 def _create_ssl_context(
     *,
     method: Method,
@@ -204,6 +230,7 @@ def create_proxy_server_context(
     ca_pemfile: str | None,
     client_cert: str | None,
     legacy_server_connect: bool,
+    use_system_store: bool,
 ) -> SSL.Context:
     context: SSL.Context = _create_ssl_context(
         method=method,
@@ -222,6 +249,23 @@ def create_proxy_server_context(
         raise RuntimeError(
             f"Cannot load trusted certificates ({ca_pemfile=}, {ca_path=})."
         ) from e
+
+    if use_system_store:
+        # Additionally trust the certificate authorities from the operating
+        # system's certificate store (e.g. enterprise roots in the Windows
+        # certificate store).
+        cert_store = context.get_cert_store()
+        assert cert_store is not None
+        for der_cert in _system_trusted_ca_certs_der():
+            cert = OpenSSL.crypto.load_certificate(
+                OpenSSL.crypto.FILETYPE_ASN1, der_cert
+            )
+            try:
+                cert_store.add_cert(cert)
+            except OpenSSL.crypto.Error:
+                # The certificate is already trusted, e.g. because it is also
+                # present in the bundle loaded above.
+                pass
 
     # Client Certs
     if client_cert:

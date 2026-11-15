@@ -640,6 +640,7 @@ def tls_settings_to_configuration(
         server_name=server_name,
         cafile=settings.ca_file,
         capath=settings.ca_path,
+        cadata=settings.cadata,
         certificate=settings.certificate,
         certificate_chain=settings.certificate_chain,
         cipher_suites=settings.cipher_suites,
